@@ -76,6 +76,12 @@ process.HyperSAS<- function(dirdat,
     print("Time (HHMMSS) not found in cast.info.dat")
     stop()
   }
+  if (is.null(cast.info$ID)) {
+    print("Year not found in cast.info.dat")
+    print("extract the ID from the folder name")
+    ID <- str_extract(dirdat, "(?<=Station)[^/]+")
+    cast.info$ID = rep(ID,nreplicates)
+  }
   if (is.null(cast.info$Dphi)) {
     print("Dphi (delta azimuth betwen sun and sensor viewing aximuth) not found in cast.info.dat")
     print("Mandatory if USE.COMPASS=FALSE")
@@ -99,10 +105,14 @@ process.HyperSAS<- function(dirdat,
           if (cast.info$Wind.units[i] == "Kts") {
             print("Convert wind speed from Knots to m/s" )
             cast.info$Windspeed[i] = cast.info$Windspeed[i]/1.9426
+            # Update units in cast.info for the next run
+            cast.info$Wind.units[i] = "m.s"
           }
           if (cast.info$Wind.units[i] == "Km.h" | cast.info$Wind.units[i] == "Km/h") {
             print("Convert wind speed from Km/h to m/s" )
             cast.info$Windspeed[i] = cast.info$Windspeed[i]/3.6
+            # Update units in cast.info for the next run
+            cast.info$Wind.units[i] = "m.s"
           }
         }
     }
@@ -120,8 +130,8 @@ process.HyperSAS<- function(dirdat,
   }
   if (is.null(cast.info$NIR.CORRECTION)) {
     print("NIR.CORRECTION method not found in cast.info.dat")
-    print("Assumes NULL")
-  cast.info$NIR.CORRECTION = rep("NULL",nreplicates)
+    print("Assumes Mobley+NONE")
+  cast.info$NIR.CORRECTION = rep("Mobley+NONE",nreplicates)
   }
 
   if (is.null(cast.info$good)) {
@@ -130,14 +140,17 @@ process.HyperSAS<- function(dirdat,
     cast.info$good = rep(1,nreplicates)
   }
 
+  # Update cast.info.dat file
+  write.table(cast.info, cast.info.file, quote = F, sep=" ", row.names = F)
+
   if (TYPE == "STATION") {
 
     # construct a file name vector from cast info
     filen = paste(cast.info$Year,"-", cast.info$Day,"-", cast.info$Time, "_L2.dat", sep="")
     nb.rec = length(filen)
 
-    if (nb.rec > 2) {
-      print("More than two Ed0+ file")
+    if (nb.rec > 1) {
+      print("More than one Ed0+ file")
 
       if (use.SAS.RData) {
         print(paste("Load: ",dirdat, "/SAS.raw.RData", sep="" ))
@@ -149,11 +162,26 @@ process.HyperSAS<- function(dirdat,
       }
 
       RRS = list()
-      all.rrs = matrix(NA, nrow=length(filen), ncol=85)
+      all.rrs = matrix(NA, nrow=length(filen), ncol=93)
+      method.selected <- cast.info$NIR.CORRECTION
+      AVW.selected <- rep(NA,nb.rec)
+      NDI.selected <- rep(NA,nb.rec)
+      QWIP.selected <- rep(NA,nb.rec)
+      QWIP.score.selected <- rep(NA,nb.rec)
+      FU.selected <- rep(NA,nb.rec)
+      cast.datetime<-rep(NA,nb.rec)
+      sunzen<-rep(NA,nb.rec)
+      viewzen<-rep(NA,nb.rec)
+      dphi<-rep(NA,nb.rec)
+      lat<-rep(NA,nb.rec)
+      lon<-rep(NA,nb.rec)
+      windspeed<-rep(NA,nb.rec)
+      ID <- rep(NA,nb.rec)
 
       for (i in 1:nb.rec) {
         print(paste("Process data collected at:", SAS[[i]]$dd$date))
         tmp = compute.Rrs.SAS(SAS[[i]],
+                      ID = cast.info$ID[i],
                       tilt.max= cast.info$tilt.max[i],
                       quantile.prob=cast.info$quantile.prob[i],
                       windspeed=cast.info$Windspeed[i],
@@ -162,8 +190,26 @@ process.HyperSAS<- function(dirdat,
                       Dphi=cast.info$Dphi[i],
                       Good=cast.info$good[i],
                       use.COMPASS)
-        RRS[[i]] <- tmp
-        all.rrs[i,] <- tmp$Rrs
+
+        plot.SAS.Rrs(tmp, PNG=TRUE)
+        RRS[[i]] <- tmp # store the list in a list of list
+        # store the Rrs in a matrix for further mean calculation using the selected method
+        ix.method <- which(tmp$methods == method.selected[i])
+        all.rrs[i,]           <- tmp$Rrs[ix.method,]
+        AVW.selected[i]       <- tmp$AVW[ix.method]
+        NDI.selected[i]       <- tmp$NDI[ix.method]
+        QWIP.selected[i]      <- tmp$QWIP[ix.method]
+        QWIP.score.selected[i]<- tmp$QWIP.score[ix.method]
+        FU.selected[i]        <- tmp$FU[ix.method]
+        cast.datetime[i]      <- RRS[[i]]$dd$date
+        sunzen[i]             <- RRS[[i]]$ThetaS
+        viewzen[i]            <- RRS[[i]]$ThetaV
+        dphi[i]               <- RRS[[i]]$Dphi.log
+        lat[i]                <- RRS[[i]]$dd$latitude
+        lon[i]                <- RRS[[i]]$dd$longitude
+        windspeed[i]          <- RRS[[i]]$Windspeed
+        ID[i]                 <- RRS[[i]]$ID
+
       }
 
   # Average the good RRS
@@ -173,11 +219,117 @@ process.HyperSAS<- function(dirdat,
       RRS$Rrs.mean =Rrs.mean
       RRS$Rrs.sd =Rrs.sd
       RRS$Rrs.wl =tmp$Rrs.wl
-      RRS$FU = Rrs2FU(tmp$Rrs.wl, Rrs.mean)$FU
+      RRS$QWIP <- QWIP.Rrs(tmp$Rrs.wl, Rrs.mean)
+      RRS$FU   <- Rrs2FU(tmp$Rrs.wl, Rrs.mean)$FU
+      RRS$DateTime <- as_datetime(mean(cast.datetime[ix.good]), origin = "1970-01-01")
+      RRS$sunzen            <- mean(sunzen[ix.good])
+      RRS$viewzen           <- mean(viewzen[ix.good])
+      RRS$dphi              <- mean(dphi[ix.good])
+      RRS$lat               <- mean(lat[ix.good])
+      RRS$lon               <- mean(lon[ix.good])
+      RRS$windspeed         <- mean(windspeed[ix.good])
+      RRS$ID                <- unique(ID)
+
+    # Plot selected Rrs
+      rrs.df <- as.data.frame(t(all.rrs))
+      cast.names <- paste(as_datetime(cast.datetime, origin = "1970-01-01"), method.selected)
+      names(rrs.df) <- cast.names
+      Df.stat = as.data.frame(cbind(wavelength=RRS$Rrs.wl,
+                               Rrs.mean =Rrs.mean,
+                               Rrs.sd =Rrs.sd))
+
+      Df.cast = as.data.frame(cbind(wavelength=RRS$Rrs.wl,rrs.df))
+      Dfm.cast = melt(Df.cast, id.vars = c("wavelength"))
+      names(Dfm.cast) = c("wavelength", "Methods", "value" )
+
+
+      plot.rrs <- ggplot() +
+        geom_line(data = Dfm.cast, aes(x = wavelength, y = value, group = Methods, color=Methods)) +
+        scale_color_viridis_d() +
+        geom_line(data = Df.stat, aes(x = wavelength, y = Rrs.mean), color="black")+
+        geom_ribbon(data = Df.stat, aes(x = wavelength, y = Rrs.mean, ymax = Rrs.mean + Rrs.sd, ymin = Rrs.mean - Rrs.sd), fill = "grey", alpha = 0.3) +
+        scale_x_continuous(limits = c(350, 800))+
+        labs(x=expression(lambda), y=expression(paste(rho[w])), colour="Methods", title = "Selected Rrs casts comparison")
+
+
+      # ##### generate the QWIP plot
+      # QWIP coefficients
+      p1 <- -8.399885e-9
+      p2 <- 1.715532e-5
+      p3 <- -1.301670e-2
+      p4 <- 4.357838e0
+      p5 <- -5.449532e2
+
+      predicted.AVW <- 440:600
+      predicted.NDI <- p1*(predicted.AVW^4) +
+        p2*(predicted.AVW^3) +
+        p3*(predicted.AVW^2) +
+        p4*predicted.AVW   + p5
+
+      # My line data frame
+      df <- data.frame(AVW = predicted.AVW,
+                       NDI = predicted.NDI,
+                       NDI.minus.0.1 = predicted.NDI-0.1,
+                       NDI.plus.0.1 = predicted.NDI+0.1,
+                       NDI.minus.0.2 = predicted.NDI-0.2,
+                       NDI.plus.0.2 = predicted.NDI+0.2)
+
+      # Reshaping
+      dfm <- melt(df,id.vars = "AVW")
+      names(dfm) <- c("AVW", "Predicted", "NDI")
+
+
+      # my point data frame
+      df.qwip <- data.frame(AVW = AVW.selected,
+                                     NDI = NDI.selected,
+                                     FU  = FU.selected,
+                                     Methods = cast.names)
+
+      # New row to be added
+      new_row <- data.frame(
+        AVW = RRS$QWIP$AVW,
+        NDI = RRS$QWIP$NDI,
+        FU = RRS$FU,
+        Methods = "Averaged Spectrum",
+        stringsAsFactors = FALSE
+      )
+
+      # Add the new row to the existing data frame
+      df.qwip <- rbind(df.qwip, new_row)
+
+      # Define meaningful colors for the points and match them to the levels of the Methods variable
+      method_colors <- c(viridis(nb.rec), "black")
+      names(method_colors) <- c(cast.names, "Averaged Spectrum")
+
+
+
+      # Plotting
+      plot.QWIP <- ggplot() +
+        geom_line(data = dfm, aes(x = AVW, y = NDI, color = Predicted, linetype = Predicted)) +
+        geom_point(data = df.qwip, aes(x = AVW, y = NDI, fill = Methods), shape = 21, size = 2.5, color = "black") +
+        geom_text(data = df.qwip, aes(x = AVW, y = NDI, label = FU), vjust = -0.5) + # Add labels
+        scale_color_manual(name = "Lines",
+                           labels = c("Predicted", "-0.1", "+0.1", "-0.2", "+0.2"),
+                           values = c("black", "orange", "orange", "red", "red")) +
+        scale_fill_manual(name = "Methods",
+                          values = method_colors,
+                          labels = unique(df.qwip$Methods)) +
+        scale_linetype_manual(name = "Lines",
+                              labels = c("Predicted", "-0.1", "+0.1", "-0.2", "+0.2"),
+                              values = c("solid", "dashed", "dashed", "dotted", "dotted"))
+
+      fullplot <- plot.rrs / plot.QWIP +
+        plot_annotation(theme = theme(plot.title = element_text(hjust = 0.5))) +
+        plot_layout(guides = "collect")
+      suppressMessages(plot(fullplot))
+
+
+      ggsave(paste("PNG/Rrs_casts_comparison.png",sep=""), units = "in",
+             width = 8, height = 7)
 
     } else {
       SAS = read.hocr.L2.SAS(filen, VERBOSE=FALSE)
-      save(file = paste(dirdat, "SAS.raw.RData", sep=""), SAS)
+      save(file = paste(dirdat, "SAS.raw.RData", sep="/"), SAS)
 
       RRS = compute.Rrs.SAS(SAS, tilt.max= cast.info$tilt.max,
                             quantile.prob=cast.info$quantile.prob,
@@ -188,8 +340,17 @@ process.HyperSAS<- function(dirdat,
                             Good=cast.info$good[i],
                             use.COMPASS)
       RRS$Rrs.mean = RRS$Rrs
-      RRS$Rrs.sd =   rep(NA,85)
+      RRS$Rrs.sd =   rep(NA,length(RRS$Rrs.mean))
       RRS$Rrs.wl =   RRS$Rrs.wl
+      RRS$DateTime          <- RRS$dd$date
+      RRS$sunzen            <- RRS$ThetaS
+      RRS$viewzen           <- RRS$ThetaV
+      RRS$dphi              <- RRS$Dphi.log
+      RRS$lat               <- RRS$dd$latitude
+      RRS$lon               <- RRS$dd$longitude
+      RRS$windspeed         <- RRS$Windspeed
+      RRS$ID                <- RRS$ID
+      plot.SAS.Rrs(RRS, PNG=TRUE)
     }
   }
 
@@ -248,7 +409,7 @@ process.HyperSAS<- function(dirdat,
 
   }
 
-  save(file = paste(dirdat,"RRS.RData", sep=""), RRS)
+  save(file = paste(dirdat,"RRS.RData", sep="/"), RRS)
 
   return(RRS)
 

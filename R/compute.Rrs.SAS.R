@@ -6,6 +6,7 @@
 #'
 #'
 #'@param SAS is a list return by \code{\link{read.horc.L2.SAS}}.
+#'@param ID is the station ID
 #'@param tilt.max is the maximum tilt tolerance for the SAS.
 #'A default value is 3 degrees is used otherwise.
 #'@param quantile.prob is a value (betwwen 0.25 to 1) for the maximum quantile probability
@@ -81,6 +82,7 @@
 #'@export
 #'@name compute.Rrs.SAS
 compute.Rrs.SAS <- function(SAS,
+                            ID = "Station",
                             tilt.max= 3,
                             quantile.prob = 0.5,
                             windspeed = 5,
@@ -94,21 +96,43 @@ compute.Rrs.SAS <- function(SAS,
   d2r <- pi / 180
 
   # tilt
-  Roll <- SAS$Anc$ROLL
-  Pitch <- SAS$Anc$PITCH
-  tilt <- atan(sqrt(tan(Roll*d2r)^2+tan(Pitch*d2r)^2))/d2r
+  if (is.na(SAS$Anc)) {
 
-  tilt.Lt = spline(SAS$Anc.Time, tilt, xout=SAS$Lt.Time)$y
-  tilt.Ed = spline(SAS$Anc.Time, tilt, xout=SAS$Ed.Time)$y
-  tilt.Li = spline(SAS$Anc.Time, tilt, xout=SAS$Li.Time)$y
+    ###### I AM HERE NEED TO DECIDE WHAT WE DO WHEN TILT IS ABSENT
+    tilt=NA
+    tilt.Lt = NA
+    tilt.Ed = NA
+    tilt.Li = NA
+    phiv.mag.Lt = NA
+    ix.Lt.good = which(SAS$Lt[,35] < quantile(SAS$Lt[,35], probs = quantile.prob) &
+                       SAS$Lt[,35] > quantile(SAS$Lt[,35], probs = 0.1))
+    phiv.mag = NA
+    declination = NA
+    phiv.true = NA
+    delta.phi =NA
 
-  #####Compute sensor azimuth for each Lt measurements
-  phiv.mag.Lt = spline(SAS$Anc.Time, SAS$Anc$COMP, xout=SAS$Lt.Time)$y
+  } else {
+    Roll <- SAS$Anc$ROLL
+    Pitch <- SAS$Anc$PITCH
+    tilt <- atan(sqrt(tan(Roll*d2r)^2+tan(Pitch*d2r)^2))/d2r
 
-  # Trim data to remove high tilt and the last quantile
-  ix.Lt.good = which(tilt.Lt < tilt.max &
-                    SAS$Lt[,35] < quantile(SAS$Lt[,35], probs = quantile.prob) &
-                    SAS$Lt[,35] > quantile(SAS$Lt[,35], probs = 0.1))
+    tilt.Lt = spline(SAS$Anc.Time, tilt, xout=SAS$Lt.Time)$y
+    tilt.Ed = spline(SAS$Anc.Time, tilt, xout=SAS$Ed.Time)$y
+    tilt.Li = spline(SAS$Anc.Time, tilt, xout=SAS$Li.Time)$y
+
+    #####Compute sensor azimuth for each Lt measurements
+    phiv.mag.Lt = spline(SAS$Anc.Time, SAS$Anc$COMP, xout=SAS$Lt.Time)$y
+
+    # Trim data to remove high tilt and the last quantile
+    ix.Lt.good = which(tilt.Lt < tilt.max &
+                         SAS$Lt[,35] < quantile(SAS$Lt[,35], probs = quantile.prob) &
+                         SAS$Lt[,35] > quantile(SAS$Lt[,35], probs = 0.1))
+  }
+
+
+
+
+
 
   Lt = SAS$Lt[ix.Lt.good,]
 
@@ -130,59 +154,28 @@ compute.Rrs.SAS <- function(SAS,
   Li.sd = apply(Li, 2, sd)
   Lt.sd = apply(Lt, 2, sd)
 
-#   ######### Substract DARK if requested
-#   if (!is.na(DARK.file)){
-#     if (file.exists(DARK.file)) {
-#       #
-#       print ("Substract darks")
-#       SAS.dark = read.hocr.L2.SAS(DARK.file, VERBOSE=FALSE)
-#       Ed.dark.mean = apply(SAS.dark$Ed, 2, mean)
-#       Li.dark.mean = apply(SAS.dark$Li, 2, mean)
-#       Lt.dark.mean = apply(SAS.dark$Lt, 2, mean)
-#
-#       Ed.mean = Ed.mean - Ed.dark.mean
-#       Li.mean = Li.mean - Li.dark.mean
-#       Lt.mean = Lt.mean - Lt.dark.mean
-#
-#
-#     } else {
-#       print(paste(DARK.file, "not found in processing directory"))
-#       print("Abort processing")
-#       return(NULL)
-#     }
-#
-#   } else {
-#     print("No dark correction")
-#     Ed.dark.mean = NA
-#     Li.dark.mean = NA
-#     Lt.dark.mean = NA
-#
-#   }
 
   ######### Interpolated wavelengths
-  waves=seq(380,800,5)
-
-  # Find wavelength indices
-  ix720 = 69
-  ix750 = 75
-  ix780 = 81
-  ix800 = 85
+  waves=seq(350,810,5)
 
 
-  # Wavelenght interpolation
+  # Wavelength interpolation
   df = as.data.frame(cbind(SAS$Ed.wl, Ed.mean))
   names(df) = c("wl","Ed")
-  mod = loess(Ed ~ wl, data = df, span=0.05)
+  mod = loess(Ed ~ wl, data = df, span=0.05,
+              control = loess.control(surface = "direct"))
   Ed.int = predict(mod,  waves)
 
   df = as.data.frame(cbind(SAS$Li.wl, Li.mean))
   names(df) = c("wl","Li")
-  mod = loess(Li ~ wl, data = df, span=0.05)
+  mod = loess(Li ~ wl, data = df, span=0.05,
+              control = loess.control(surface = "direct"))
   Li.int = predict(mod,  waves)
 
   df = as.data.frame(cbind(SAS$Lt.wl, Lt.mean))
   names(df) = c("wl","Lt")
-  mod = loess(Lt ~ wl, data = df, span=0.05)
+  mod = loess(Lt ~ wl, data = df, span=0.05,
+              control = loess.control(surface = "direct"))
   Lt.int = predict(mod,  waves)
 
   ######## Compute Sky reflectance and rho
@@ -196,25 +189,24 @@ compute.Rrs.SAS <- function(SAS,
   sea.smooth = predict(mod, waves)
 
 
+
+
+  ######### Get rho from MOBLEY LUT or use a constant rho of 0.0256 if cloudy
+  # Find wavelength indices
+  ix350 = which.min(abs(waves - 350))
+  ix380 = which.min(abs(waves - 380))
+  ix490 = which.min(abs(waves - 490))
+  ix720 = which.min(abs(waves - 720))
+  ix750 = which.min(abs(waves - 750))
+  ix780 = which.min(abs(waves - 780))
+  ix810 = which.min(abs(waves - 810))
+
+
+
   ##### Compute sun-viweing geometry
   thetaS = SAS$dd$sunzen
   phiS = SAS$dd$sunazim
-  phiv.mag = mean(phiv.mag.Lt[ix.Lt.good])
-  declination = magneticField(SAS$dd$longitude, SAS$dd$latitude, SAS$dd$date)$declination
-  phiv.true = phiv.mag + declination
 
-  if (phiv.true > phiS) {
-    delta.phi = phiv.true - phiS
-  } else {
-    delta.phi = phiS - phiv.true
-  }
-
-
-  if (delta.phi > 180) {
-    delta.phi = 360-delta.phi
-  }
-
-  ######### Get rho from MOBLEY LUT or use a constant rho of 0.0256 if cloudy
   if (sky.smooth[ix750] >= 0.05){
     #Then  CLOUDY SKY (Ruddick et al L&O 2006, eq. 23, 24)
     print("Cloudy sky")
@@ -225,21 +217,29 @@ compute.Rrs.SAS <- function(SAS,
     CLEARSKY = TRUE
 
     # Then interpolate within the LUT provided by MOBLEY (for 550 nm)
+    if (use.COMPASS) {
+      if (is.na(delta.phi)) {
+        print("WARNING: Calculated delta phi taken in cast.info.dat")
+        use.COMPASS = FALSE
+      } else {
+        if (abs(Dphi - delta.phi) > 10) {
+          print("WARNING: Calculated delta phi does not match the logged Dphi in cast.info.dat")
+          use.COMPASS = FALSE
+        }
 
-    if (abs(Dphi - delta.phi) > 10) {
-      print("WARNING: Calculated delta phi does not match the logged Dphi in cast.info.dat")
-      use.COMPASS = FALSE
+        if (delta.phi < 80) {
+          print("WARNING: delta phi is below 80 degrees")
+          use.COMPASS = FALSE
+        }
+
+        if (delta.phi > 150) {
+          print("WARNING: delta phi is greater than 150 degrees")
+          use.COMPASS = FALSE
+        }
+      }
+
     }
 
-    if (delta.phi < 80) {
-      print("WARNING: delta phi is below 80 degrees")
-      use.COMPASS = FALSE
-    }
-
-    if (delta.phi > 150) {
-      print("WARNING: delta phi is greater than 150 degrees")
-      use.COMPASS = FALSE
-    }
     #
 
     if (use.COMPASS) {
@@ -252,28 +252,140 @@ compute.Rrs.SAS <- function(SAS,
 
 
   ###################
-  Rrs = sea.smooth - (rho*sky.smooth)
+  #### Compute Rrs by removing sky reflectance to total reflectance.
+  #### 7 methods are implemented
+  methods=c("Mobley+NONE", "Mobley+NULL", 'Mobley+SIMILARITY1', "NIR", "UV", "UV+NIR", "Kutser")
+  Rrs <- matrix(NA, nrow=7, ncol=93)
+  ##### store the QWIP parameters computed using QWIP.Rrs.R
+  AVW <- rep(NA,7)
+  NDI <- rep(NA,7)
+  QWIP <- rep(NA,7)
+  QWIP.score <- rep(NA,7)
+  FU <- rep(NA,7)
+
+  ##### Method 1. Mobley LUT standard method with no white correction ("NONE")
+  i=1
+  Rrs[i,] <- sea.smooth - (rho*sky.smooth) ### Mobley LUT standard method
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
 
   # Apply a correction
-  offset = 0
-  if (NIR.CORRECTION == "SIMILARITY") {
-    #   Estimation of the NIR Rrs offset correction based on Ruddick et al L&O 2006
-    offset = 2.35*Rrs[ix780] - Rrs[ix720]/(2.35-1)
-  }
-  if (NIR.CORRECTION == "NULL") {
-    # A standard NULL correction
-    offset = Rrs[ix800]
-  }
 
-  if (offset == 0) print("WARNING: no NIR correction is applied.")
+  #####
+  ###### Method 2.  A standard NULL correction
+  i=2
+  offset = Rrs[1,ix810]
+  Rrs[i,] <- Rrs[1,] - offset # Apply NIR correction
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
 
-  Rrs.offset = Rrs - offset # Apply NIR correction
+  #####
+  ###### Methods 3. Estimation of the NIR Rrs offset correction based on
+  #      Ruddick et al L&O 2006, SPIE 2005
+  i=3
+  offset.simil = 2.35*Rrs[1,ix780] - Rrs[1,ix720]/(2.35-1)
+  Rrs[i,] <- Rrs[1,] - offset.simil # Apply NIR correction
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
+
+  #####
+  ###### Method 4. Estimation of the rho.fresnel assuming BLACK Pixel assumption in the NIR
+  i=4
+  rho.sky.NIR =  (mean(sea.smooth[ix780:ix810], na.rm = T) /
+                    mean(sky.smooth[ix780:ix810], na.rm = T))
+  Rrs[i,] <-  sea.smooth - (rho.sky.NIR*sky.smooth)
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
+
+  #####
+  ###### Method 5. Estimation of the rho.fresnel assuming BLACK Pixel assumption in the UV
+  i=5
+  rho.sky.UV =  (mean(sea.smooth[ix350:ix380], na.rm = T) /
+                   mean(sky.smooth[ix350:ix380], na.rm = T))
+  Rrs[i,] <-  sea.smooth - (rho.sky.UV*sky.smooth)
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
+
+  #####
+  ###### Method 6. Estimation of the rho.fresnel assuming BLACK Pixel assumption in both UV and NIR (spectrally dependent)
+  i=6
+  rho.sky.UV.NIR = spline(c(mean(waves[ix350:ix380], na.rm = T),
+                            mean(waves[ix780:ix810], na.rm = T)),
+                          c(rho.sky.UV, rho.sky.NIR),
+                          xout = waves)$y
+  Rrs[i,] <-  sea.smooth - (rho.sky.UV.NIR*sky.smooth)
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
+
+  #####
+  ##### Method 7: Implementation of Kutser et al. 2013 for removal of sky glint
+  #if (VERBOSE) print("Begining the Kutser correction for glint")
+  i=7
+  UVdata <- sea.smooth[ix350:ix380]
+  NIRdata <- sea.smooth[ix780:ix810]
+  UVwave <- waves[ix350:ix380]
+  NIRwave <- waves[ix780:ix810]
+  #if (VERBOSE) print("Wavelength and data at UV and NIR binned")
+  UV.NIR.data <- c(UVdata,NIRdata)
+  UV.NIR.wave <- c(UVwave,NIRwave)
+  Kutserdata <- data.frame(UV.NIR.wave, UV.NIR.data)
+  names(Kutserdata) <- c("waves", "urhow")
+  #if (VERBOSE) print("Starting the NLS")
+  glint.fit <- nls(urhow ~ b*waves^z,start = list(b = 1, z = -1),data=Kutserdata,
+                   control = nls.control(maxiter = 300))
+  p <- coef(glint.fit)
+  print(p)
+  Kutserestimate <- p[1]*(waves)^p[2]
+  Rrs[i,]  <- sea.smooth - Kutserestimate
+  tmp=QWIP.Rrs(waves, Rrs[i,])
+  AVW[i] <- tmp$AVW
+  NDI[i] <- tmp$NDI
+  QWIP[i] <-tmp$QWIP
+  QWIP.score[i] <- tmp$QWIP.score
+  FU[i] <- Rrs2FU(waves, Rrs[i,])$FU
+
 
   return(list(
+    ID = ID,
     Rrs.wl = waves,
-    Rrs = Rrs.offset,
+    methods = methods,
+    Rrs = Rrs,
+    rhow = pi*Rrs,
     rho.sky = rho,
+    rho.sky.NIR = rho.sky.NIR,
+    rho.sky.UV = rho.sky.UV,
+    rho.sky.UV.NIR = rho.sky.UV.NIR,
     offset = offset,
+    offset.simil = offset.simil,
+    AVW = AVW,
+    NDI = NDI,
+    QWIP = QWIP,
+    QWIP.score = QWIP.score,
+    FU = FU,
     Ed=Ed,
     Lt=Lt,
     Li=Li,
@@ -299,7 +411,8 @@ compute.Rrs.SAS <- function(SAS,
     Windspeed = windspeed,
     CLEARSKY = CLEARSKY,
     Good = Good,
-    use.COMPASS = use.COMPASS
+    use.COMPASS = use.COMPASS,
+    dd = SAS$dd
     ))
 
 }
